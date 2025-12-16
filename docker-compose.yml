@@ -1,0 +1,54 @@
+# docker-compose.yml (HTTPS Production Ready)
+# Save as: docker-compose.yml (in root directory)
+
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: videoconf-backend
+    ports:
+      - "3001:3001"
+      - "40000-40100:40000-40100/udp"  # Mediasoup RTC ports
+      - "40000-40100:40000-40100/tcp"
+    volumes:
+      - ./backend/uploads:/app/uploads
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      # Your WiFi IP Address from ipconfig
+      - ANNOUNCED_IP=10.1.1.13  # ← Your actual WiFi IP
+      # For production with domain, use your domain name
+      # - ANNOUNCED_IP=yourdomain.com
+    restart: unless-stopped
+    networks:
+      - videoconf-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: videoconf-frontend
+    ports:
+      - "443:443"   # HTTPS
+      - "80:80"     # HTTP (redirects to HTTPS)
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - videoconf-network
+    # Uncomment below for production with Let's Encrypt certificates
+    # volumes:
+    #   - /etc/letsencrypt/live/yourdomain.com:/etc/nginx/ssl:ro
+
+networks:
+  videoconf-network:
+    driver: bridge
