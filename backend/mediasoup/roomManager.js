@@ -1,32 +1,99 @@
-// roomManager.js - EXPLICIT TCP-ONLY FIX FOR RENDER
+// roomManager.js - Use Render's External IP for WebRTC
 // Save as: backend/mediasoup/roomManager.js
-// This version FORCES TCP-only mode when RENDER env is detected
 
 const mediasoup = require("mediasoup");
+const https = require("https");
 
 const rooms = new Map();
+let cachedExternalIp = null;
 
 // ===============================================
-// EXPLICIT TRANSPORT OPTIONS FOR RENDER
+// GET RENDER'S EXTERNAL IP
 // ===============================================
-function getWebRtcTransportOptions(announcedIpHint) {
-  // Get announced IP
-  let announcedIp;
-  
-  if (process.env.RENDER) {
-    const renderUrl = process.env.RENDER_EXTERNAL_URL || '';
-    announcedIp = renderUrl.replace(/^https?:\/\//, '').replace(/:\d+$/, '');
-    console.log(`🌐 Render mode - using hostname: ${announcedIp}`);
-  } else if (announcedIpHint) {
-    announcedIp = announcedIpHint;
-    console.log(`🌐 Using client hint: ${announcedIp}`);
-  } else if (global.ANNOUNCED_IP) {
-    announcedIp = global.ANNOUNCED_IP;
-    console.log(`🌐 Using global IP: ${announcedIp}`);
+async function getRenderExternalIp() {
+  if (cachedExternalIp) {
+    return cachedExternalIp;
   }
 
-  // CRITICAL: For Render, FORCE TCP-only
-  const isRender = !!process.env.RENDER;
+  return new Promise((resolve) => {
+    // Use multiple IP detection services as fallback
+    const services = [
+      'https://api.ipify.org',
+      'https://icanhazip.com',
+      'https://ifconfig.me/ip'
+    ];
+
+    const tryService = (index) => {
+      if (index >= services.length) {
+        console.error('❌ Failed to get external IP from all services');
+        resolve(null);
+        return;
+      }
+
+      https.get(services[index], (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          const ip = data.trim();
+          if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) {
+            console.log(`✅ Got external IP from ${services[index]}: ${ip}`);
+            cachedExternalIp = ip;
+            resolve(ip);
+          } else {
+            console.warn(`⚠️ Invalid IP from ${services[index]}: ${ip}`);
+            tryService(index + 1);
+          }
+        });
+      }).on('error', (err) => {
+        console.warn(`⚠️ Failed to get IP from ${services[index]}:`, err.message);
+        tryService(index + 1);
+      }).setTimeout(5000, () => {
+        console.warn(`⚠️ Timeout getting IP from ${services[index]}`);
+        tryService(index + 1);
+      });
+    };
+
+    tryService(0);
+  });
+}
+
+// ===============================================
+// GET ANNOUNCED IP
+// ===============================================
+async function getAnnouncedIp(announcedIpHint) {
+  if (process.env.RENDER) {
+    // For Render, get the actual external IP
+    const externalIp = await getRenderExternalIp();
+    if (externalIp) {
+      console.log(`🌐 Render mode - using external IP: ${externalIp}`);
+      return externalIp;
+    }
+    
+    // Fallback to hostname
+    const renderUrl = process.env.RENDER_EXTERNAL_URL || '';
+    const hostname = renderUrl.replace(/^https?:\/\//, '').replace(/:\d+$/, '');
+    console.log(`🌐 Render mode - using hostname fallback: ${hostname}`);
+    return hostname;
+  }
+
+  if (announcedIpHint) {
+    console.log(`🌐 Using client hint: ${announcedIpHint}`);
+    return announcedIpHint;
+  }
+
+  if (global.ANNOUNCED_IP) {
+    console.log(`🌐 Using global IP: ${global.ANNOUNCED_IP}`);
+    return global.ANNOUNCED_IP;
+  }
+
+  return undefined;
+}
+
+// ===============================================
+// GET TRANSPORT OPTIONS
+// ===============================================
+async function getWebRtcTransportOptions(announcedIpHint) {
+  const announcedIp = await getAnnouncedIp(announcedIpHint);
   
   const options = {
     listenIps: [
@@ -35,11 +102,10 @@ function getWebRtcTransportOptions(announcedIpHint) {
         announcedIp: announcedIp,
       },
     ],
-    // RENDER: TCP ONLY - UDP DISABLED
-    enableUdp: false,  // ALWAYS false for Render
-    enableTcp: true,   // ALWAYS true
-    preferUdp: false,  // ALWAYS false for Render
-    preferTcp: true,   // ALWAYS true for Render
+    enableUdp: false,
+    enableTcp: true,
+    preferUdp: false,
+    preferTcp: true,
     initialAvailableOutgoingBitrate: 1000000,
     minimumAvailableOutgoingBitrate: 600000,
     maxSctpMessageSize: 262144,
@@ -128,7 +194,7 @@ async function createRoom(roomId, worker) {
 
     async createSendTransport(peerId, announcedIpHint) {
       try {
-        const options = getWebRtcTransportOptions(announcedIpHint);
+        const options = await getWebRtcTransportOptions(announcedIpHint);
         const transport = await this.router.createWebRtcTransport(options);
 
         this.peers.get(peerId).sendTransport = transport;
@@ -145,16 +211,12 @@ async function createRoom(roomId, worker) {
           }))
         });
 
-        // Monitor transport
         transport.on('icestatechange', (iceState) => {
           console.log(`📡 Send transport ${transport.id} ICE: ${iceState}`);
         });
 
         transport.on('dtlsstatechange', (dtlsState) => {
           console.log(`🔒 Send transport ${transport.id} DTLS: ${dtlsState}`);
-          if (dtlsState === 'failed' || dtlsState === 'closed') {
-            console.error(`❌ Send transport ${transport.id} FAILED`);
-          }
         });
 
         return {
@@ -164,7 +226,7 @@ async function createRoom(roomId, worker) {
           dtlsParameters: transport.dtlsParameters,
         };
       } catch (error) {
-        console.error(`❌ createSendTransport error for ${peerId}:`, error);
+        console.error(`❌ createSendTransport error:`, error);
         throw error;
       }
     },
@@ -219,7 +281,7 @@ async function createRoom(roomId, worker) {
 
     async createRecvTransport(peerId, announcedIpHint) {
       try {
-        const options = getWebRtcTransportOptions(announcedIpHint);
+        const options = await getWebRtcTransportOptions(announcedIpHint);
         const transport = await this.router.createWebRtcTransport(options);
 
         this.peers.get(peerId).recvTransport = transport;
@@ -242,9 +304,6 @@ async function createRoom(roomId, worker) {
 
         transport.on('dtlsstatechange', (dtlsState) => {
           console.log(`🔒 Recv transport ${transport.id} DTLS: ${dtlsState}`);
-          if (dtlsState === 'failed' || dtlsState === 'closed') {
-            console.error(`❌ Recv transport ${transport.id} FAILED`);
-          }
         });
 
         return {
