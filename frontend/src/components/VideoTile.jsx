@@ -31,8 +31,11 @@ export default function VideoTile({ peerId, name, stream }) {
 
     attachVideo();
 
-    // Force play immediately
+    // Don't play immediately - wait for loadedmetadata
+    let hasPlayed = false;
     const playVideo = () => {
+      if (hasPlayed) return;
+      hasPlayed = true;
       console.log(`🎥 VideoTile ${peerId}: Attempting to play video. readyState:`, videoElement.readyState);
       videoElement.play().then(() => {
         console.log(`🎥 VideoTile ${peerId}: Video play() succeeded`);
@@ -48,13 +51,17 @@ export default function VideoTile({ peerId, name, stream }) {
       });
     };
 
-    playVideo();
-
     const handleLoadedMetadata = () => {
+      console.log(`🎥 VideoTile ${peerId}: loadedmetadata fired, readyState:`, videoElement.readyState);
       playVideo();
     };
 
-    videoElement.addEventListener('loadedmetadata', handleLoadedMetadata);
+    // Play immediately if already loaded
+    if (videoElement.readyState >= 2) {
+      playVideo();
+    } else {
+      videoElement.addEventListener('loadedmetadata', handleLoadedMetadata);
+    }
 
     // Listen for new tracks
     const handleAddTrack = () => {
