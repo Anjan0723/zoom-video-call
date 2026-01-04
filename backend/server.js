@@ -326,7 +326,7 @@ io.on("connection", (socket) => {
 // ---------------------------------------
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, "0.0.0.0", () => {
-  const isDocker = process.env.ANNOUNCED_IP ? true : false;
+  const isDocker = process.env.ANNOUNCED_IP && !process.env.RENDER ? true : false;
   const proto = useHttps ? "https" : "http";
   
   console.log("\n🎉 ================================");
