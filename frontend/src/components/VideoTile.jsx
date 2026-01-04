@@ -87,18 +87,6 @@ export default function VideoTile({ peerId, name, stream }) {
     // Handle playing the video
     const playVideo = async () => {
       try {
-        // Wait for video to be ready
-        if (videoElement.readyState < 2) {
-          console.log(`🎥 VideoTile ${peerId}: Waiting for loadedmetadata...`);
-          await new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => reject(new Error('Metadata load timeout')), 10000); // Increased timeout
-            videoElement.addEventListener('loadedmetadata', () => {
-              clearTimeout(timeout);
-              resolve();
-            }, { once: true });
-          });
-        }
-        
         console.log(`🎥 VideoTile ${peerId}: Attempting to play video. readyState:`, videoElement.readyState);
         await videoElement.play();
         console.log(`✅ VideoTile ${peerId}: Video play() succeeded`);
@@ -115,30 +103,6 @@ export default function VideoTile({ peerId, name, stream }) {
           ...prev,
           error: err.message
         }));
-        
-        // Retry on user interaction
-        const playOnInteraction = () => {
-          console.log(`🔄 VideoTile ${peerId}: Retrying play on interaction`);
-          videoElement.play()
-            .then(() => {
-              setVideoState(prev => ({ ...prev, isPlaying: true, error: null }));
-            })
-            .catch(console.error);
-        };
-        document.addEventListener('click', playOnInteraction, { once: true });
-        document.addEventListener('touchstart', playOnInteraction, { once: true });
-        
-        // Auto-retry after a delay
-        setTimeout(() => {
-          if (videoElement.readyState >= 2) {
-            console.log(`🔄 VideoTile ${peerId}: Auto-retrying play...`);
-            videoElement.play()
-              .then(() => {
-                setVideoState(prev => ({ ...prev, isPlaying: true, error: null }));
-              })
-              .catch(console.error);
-          }
-        }, 2000);
       }
     };
 
