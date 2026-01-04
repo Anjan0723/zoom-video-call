@@ -111,13 +111,11 @@ export default function ChatPanel({ roomId, userName, socket, isOpen, onClose })
     setIsUploading(true);
 
     try {
-      const backend = `http://${window.location.hostname}:3001`;  // CHANGED: https -> http
-      
       for (const file of selectedFiles) {
         const formData = new FormData();
         formData.append('file', file);
 
-        const response = await fetch(`${backend}/upload`, {
+        const response = await fetch(`/upload`, {
           method: 'POST',
           body: formData
         });

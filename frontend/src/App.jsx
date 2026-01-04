@@ -100,8 +100,34 @@ export default function App() {
 
       localStreamRef.current = stream;
       return stream;
-    } catch {
-      alert("Camera/Mic permission denied");
+    } catch (err) {
+      const isSecure = typeof window !== "undefined" && window.isSecureContext;
+      const hasGetUserMedia = !!navigator?.mediaDevices?.getUserMedia;
+
+      if (!isSecure) {
+        alert(
+          "Camera/Mic blocked because the page is not secure. Open the app on https://<your-ip>:5173 (or http://localhost:5173 on this computer), then allow camera/mic permissions."
+        );
+        return null;
+      }
+
+      if (!hasGetUserMedia) {
+        alert("Camera/Mic is not supported in this browser.");
+        return null;
+      }
+
+      const name = err?.name ? String(err.name) : "";
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        alert("Camera/Mic permission denied. Please allow permissions in the browser and try again.");
+        return null;
+      }
+
+      if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+        alert("No camera/microphone found. Please connect a device and try again.");
+        return null;
+      }
+
+      alert("Unable to access camera/mic. Please check browser permissions and try again.");
       return null;
     }
   };
@@ -191,7 +217,19 @@ export default function App() {
       });
 
     console.log("📋 Setting initial participants:", initialParticipants);
-    setParticipants(initialParticipants);
+    setParticipants((prevParticipants) => {
+      const prevById = new Map(prevParticipants.map((pp) => [pp.id, pp]));
+      return initialParticipants.map((ip) => {
+        const prev = prevById.get(ip.id);
+        return prev
+          ? {
+              ...ip,
+              stream: prev.stream ?? ip.stream,
+              streamKey: prev.stream ? prev.streamKey : ip.streamKey,
+            }
+          : ip;
+      });
+    });
 
     // CRITICAL: Wait a bit before producing to ensure participants are set
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -229,8 +267,41 @@ export default function App() {
     setCurrentView("home");
   };
 
-  const copyRoomId = () => {
-    navigator.clipboard.writeText(roomId);
+  const copyRoomId = async () => {
+    const text = roomId;
+    let success = false;
+
+    try {
+      if (navigator?.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        success = true;
+      }
+    } catch (e) {
+      success = false;
+    }
+
+    if (!success) {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "absolute";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        success = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) {
+        success = false;
+      }
+    }
+
+    if (!success) {
+      window.prompt("Copy meeting ID:", text);
+      return;
+    }
+
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };

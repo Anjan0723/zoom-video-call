@@ -14,15 +14,21 @@ export function connectSocket() {
 
   // When running in Docker with HTTPS, always use relative path
   // Nginx will proxy to backend
-  const backend = `${window.location.protocol}//${window.location.host}`;
+  const envBackend =
+    typeof import.meta !== "undefined" && import.meta.env
+      ? import.meta.env.VITE_BACKEND_URL
+      : undefined;
+  const backend =
+    envBackend ||
+    (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.PROD
+      ? `${window.location.protocol}//${window.location.host}`
+      : `${window.location.protocol}//${window.location.host}`);
   
   console.log(`🔌 Connecting to backend: ${backend}`);
 
   socket = io(backend, {
     transports: ["websocket", "polling"],
     path: '/socket.io',
-    secure: true,  // Use secure connection
-    rejectUnauthorized: false  // Accept self-signed certificates
   });
 
   socket.on("connect", () => {
@@ -146,31 +152,35 @@ export async function startProducing(stream, roomId) {
 // ------------------------------------------------------
 function createSendTransport(roomId) {
   return new Promise((resolve) => {
-    socket.emit("createSendTransport", { roomId }, (params) => {
-      console.log("SEND TRANSPORT PARAMS:", params);
+    socket.emit(
+      "createSendTransport",
+      { roomId, clientHost: typeof window !== "undefined" ? window.location.hostname : undefined },
+      (params) => {
+        console.log("SEND TRANSPORT PARAMS:", params);
 
-      if (!params) {
-        console.error("SendTransport Error: No params received");
-        return resolve(null);
+        if (!params) {
+          console.error("SendTransport Error: No params received");
+          return resolve(null);
+        }
+
+        const transport = device.createSendTransport(params);
+
+        transport.on("connect", ({ dtlsParameters }, cb) => {
+          socket.emit("connectSendTransport", { roomId, dtlsParameters });
+          cb();
+        });
+
+        transport.on("produce", ({ kind, rtpParameters }, cb) => {
+          socket.emit(
+            "produce",
+            { roomId, kind, rtpParameters },
+            ({ id }) => cb({ id })
+          );
+        });
+
+        resolve(transport);
       }
-
-      const transport = device.createSendTransport(params);
-
-      transport.on("connect", ({ dtlsParameters }, cb) => {
-        socket.emit("connectSendTransport", { roomId, dtlsParameters });
-        cb();
-      });
-
-      transport.on("produce", ({ kind, rtpParameters }, cb) => {
-        socket.emit(
-          "produce",
-          { roomId, kind, rtpParameters },
-          ({ id }) => cb({ id })
-        );
-      });
-
-      resolve(transport);
-    });
+    );
   });
 }
 
@@ -179,21 +189,25 @@ function createSendTransport(roomId) {
 // ------------------------------------------------------
 function createRecvTransport(roomId) {
   return new Promise((resolve) => {
-    socket.emit("createRecvTransport", { roomId }, (params) => {
-      if (!params) {
-        console.error("RecvTransport Error: No params received");
-        return resolve(null);
+    socket.emit(
+      "createRecvTransport",
+      { roomId, clientHost: typeof window !== "undefined" ? window.location.hostname : undefined },
+      (params) => {
+        if (!params) {
+          console.error("RecvTransport Error: No params received");
+          return resolve(null);
+        }
+
+        const transport = device.createRecvTransport(params);
+
+        transport.on("connect", ({ dtlsParameters }, cb) => {
+          socket.emit("connectRecvTransport", { roomId, dtlsParameters });
+          cb();
+        });
+
+        resolve(transport);
       }
-
-      const transport = device.createRecvTransport(params);
-
-      transport.on("connect", ({ dtlsParameters }, cb) => {
-        socket.emit("connectRecvTransport", { roomId, dtlsParameters });
-        cb();
-      });
-
-      resolve(transport);
-    });
+    );
   });
 }
 

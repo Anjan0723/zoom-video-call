@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from "react";
 
 export default function VideoTile({ peerId, name, stream }) {
   const videoRef = useRef(null);
+  const audioRef = useRef(null);
 
   useEffect(() => {
     const videoElement = videoRef.current;
@@ -14,8 +15,16 @@ export default function VideoTile({ peerId, name, stream }) {
       return;
     }
 
-    // Set srcObject
-    videoElement.srcObject = stream;
+    const attachVideo = () => {
+      const videoTracks = stream.getVideoTracks ? stream.getVideoTracks() : [];
+      if (!videoTracks || videoTracks.length === 0) {
+        videoElement.srcObject = null;
+        return;
+      }
+      videoElement.srcObject = stream;
+    };
+
+    attachVideo();
 
     // Force play immediately
     const playVideo = () => {
@@ -31,8 +40,15 @@ export default function VideoTile({ peerId, name, stream }) {
 
     playVideo();
 
+    const handleLoadedMetadata = () => {
+      playVideo();
+    };
+
+    videoElement.addEventListener('loadedmetadata', handleLoadedMetadata);
+
     // Listen for new tracks
     const handleAddTrack = () => {
+      attachVideo();
       playVideo();
     };
 
@@ -40,10 +56,53 @@ export default function VideoTile({ peerId, name, stream }) {
 
     // Cleanup
     return () => {
+      videoElement.removeEventListener('loadedmetadata', handleLoadedMetadata);
       stream.removeEventListener('addtrack', handleAddTrack);
-      if (videoElement.srcObject === stream) {
+      if (videoElement.srcObject) {
         videoElement.srcObject = null;
       }
+    };
+  }, [stream, peerId]);
+
+  useEffect(() => {
+    const audioElement = audioRef.current;
+    if (!audioElement) return;
+
+    const hasValidStream = stream && stream.getTracks && stream.getTracks().length > 0;
+    if (!hasValidStream || peerId === "local") {
+      audioElement.srcObject = null;
+      return;
+    }
+
+    const attachAudio = () => {
+      const audioTracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
+      if (!audioTracks || audioTracks.length === 0) {
+        audioElement.srcObject = null;
+        return;
+      }
+      const audioOnlyStream = new MediaStream(audioTracks);
+      audioElement.srcObject = audioOnlyStream;
+    };
+
+    attachAudio();
+    audioElement.play().catch(() => {
+      const playOnClick = () => {
+        audioElement.play();
+        document.removeEventListener('click', playOnClick);
+      };
+      document.addEventListener('click', playOnClick, { once: true });
+    });
+
+    const handleAddTrack = () => {
+      attachAudio();
+      audioElement.play().catch(() => {});
+    };
+
+    stream.addEventListener('addtrack', handleAddTrack);
+
+    return () => {
+      stream.removeEventListener('addtrack', handleAddTrack);
+      audioElement.srcObject = null;
     };
   }, [stream, peerId]);
 
@@ -57,12 +116,14 @@ export default function VideoTile({ peerId, name, stream }) {
         ref={videoRef}
         autoPlay
         playsInline
-        muted={peerId === "local"}
+        muted
         className="w-full h-full object-cover"
       />
 
+      <audio ref={audioRef} autoPlay playsInline />
+
       {/* Loading State */}
-      {!hasValidStream && (
+      {(!hasValidStream || !hasVideo) && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
           <div className="text-center">
             <div className="w-16 h-16 bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-3">
