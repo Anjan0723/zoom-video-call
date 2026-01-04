@@ -85,7 +85,11 @@ export default function VideoTile({ peerId, name, stream }) {
     videoElement.addEventListener('canplaythrough', updateReadyState);
 
     // Handle playing the video
+    let isPlaying = false;
     const playVideo = async () => {
+      if (isPlaying) return; // Prevent multiple play calls
+      isPlaying = true;
+      
       try {
         console.log(`🎥 VideoTile ${peerId}: Attempting to play video. readyState:`, videoElement.readyState);
         await videoElement.play();
@@ -106,7 +110,8 @@ export default function VideoTile({ peerId, name, stream }) {
       }
     };
 
-    playVideo();
+    // Delay play call slightly to avoid race conditions
+    const playTimeout = setTimeout(playVideo, 100);
 
     // Listen for track state changes
     videoTracks.forEach(track => {
@@ -140,14 +145,18 @@ export default function VideoTile({ peerId, name, stream }) {
 
     // Cleanup
     return () => {
+      clearTimeout(playTimeout);
       videoElement.removeEventListener('loadedmetadata', updateReadyState);
       videoElement.removeEventListener('loadeddata', updateReadyState);
       videoElement.removeEventListener('canplay', updateReadyState);
       videoElement.removeEventListener('canplaythrough', updateReadyState);
       stream.removeEventListener('addtrack', handleAddTrack);
-      if (videoElement.srcObject === stream) {
-        videoElement.srcObject = null;
-      }
+      // Don't clear srcObject immediately to avoid interrupting play
+      setTimeout(() => {
+        if (videoElement.srcObject === stream) {
+          videoElement.srcObject = null;
+        }
+      }, 100);
     };
   }, [stream, peerId]);
 
