@@ -31,6 +31,7 @@ export default function VideoTile({ peerId, name, stream }) {
 
     const videoTracks = stream.getVideoTracks();
     console.log(`🎥 VideoTile ${peerId}: Video tracks:`, videoTracks.length, 'Stream active:', stream.active);
+    console.log(`🎥 VideoTile ${peerId}: Stream ID:`, stream.id);
     console.log(`🎥 VideoTile ${peerId}: Video track details:`, videoTracks.map(t => ({
       id: t.id,
       enabled: t.enabled,
@@ -66,8 +67,11 @@ export default function VideoTile({ peerId, name, stream }) {
 
     // Only update srcObject if it's different
     if (videoElement.srcObject !== stream) {
+      console.log(`🎥 VideoTile ${peerId}: Setting srcObject to stream`, stream.id);
       videoElement.srcObject = stream;
-      console.log(`🎥 VideoTile ${peerId}: Set srcObject`);
+      
+      // Force a reload of the video element
+      videoElement.load();
     }
 
     // Monitor ready state changes
@@ -92,6 +96,22 @@ export default function VideoTile({ peerId, name, stream }) {
       
       try {
         console.log(`🎥 VideoTile ${peerId}: Attempting to play video. readyState:`, videoElement.readyState);
+        
+        // Wait a bit for the video to be ready
+        if (videoElement.readyState < 2) {
+          console.log(`🎥 VideoTile ${peerId}: Waiting for video to be ready...`);
+          await new Promise(resolve => {
+            const checkReady = () => {
+              if (videoElement.readyState >= 2) {
+                resolve();
+              } else {
+                setTimeout(checkReady, 100);
+              }
+            };
+            checkReady();
+          });
+        }
+        
         await videoElement.play();
         console.log(`✅ VideoTile ${peerId}: Video play() succeeded`);
         setVideoState(prev => ({
@@ -111,7 +131,7 @@ export default function VideoTile({ peerId, name, stream }) {
     };
 
     // Delay play call slightly to avoid race conditions
-    const playTimeout = setTimeout(playVideo, 100);
+    const playTimeout = setTimeout(playVideo, 200);
 
     // Listen for track state changes
     videoTracks.forEach(track => {
