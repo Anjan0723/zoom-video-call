@@ -1,54 +1,32 @@
-// roomManager.js - Complete Fixed Version for Render Deployment
+// roomManager.js - EXPLICIT TCP-ONLY FIX FOR RENDER
 // Save as: backend/mediasoup/roomManager.js
+// This version FORCES TCP-only mode when RENDER env is detected
 
 const mediasoup = require("mediasoup");
 
 const rooms = new Map();
 
 // ===============================================
-// GET ANNOUNCED IP FOR RENDER OR LOCAL
-// ===============================================
-function getAnnouncedIP(announcedIpHint) {
-  // Priority 1: Use Render's external hostname
-  if (process.env.RENDER) {
-    const renderUrl = process.env.RENDER_EXTERNAL_URL || '';
-    const hostname = renderUrl.replace(/^https?:\/\//, '').replace(/:\d+$/, '');
-    if (hostname) {
-      console.log(`🌐 Using Render hostname: ${hostname}`);
-      return hostname;
-    }
-  }
-
-  // Priority 2: Use provided hint from client
-  if (announcedIpHint && announcedIpHint !== 'localhost' && announcedIpHint !== '127.0.0.1') {
-    console.log(`🌐 Using client hint: ${announcedIpHint}`);
-    return announcedIpHint;
-  }
-
-  // Priority 3: Use global variable set by server.js
-  if (global.ANNOUNCED_IP) {
-    console.log(`🌐 Using global.ANNOUNCED_IP: ${global.ANNOUNCED_IP}`);
-    return global.ANNOUNCED_IP;
-  }
-
-  // Priority 4: Use environment variable
-  if (process.env.ANNOUNCED_IP) {
-    console.log(`🌐 Using ANNOUNCED_IP env: ${process.env.ANNOUNCED_IP}`);
-    return process.env.ANNOUNCED_IP;
-  }
-
-  console.warn('⚠️ No announced IP found, using undefined');
-  return undefined;
-}
-
-// ===============================================
-// GET WEBRTC TRANSPORT OPTIONS
+// EXPLICIT TRANSPORT OPTIONS FOR RENDER
 // ===============================================
 function getWebRtcTransportOptions(announcedIpHint) {
-  const announcedIp = getAnnouncedIP(announcedIpHint);
+  // Get announced IP
+  let announcedIp;
   
-  // Detect if running on Render or production
-  const isProduction = process.env.RENDER || process.env.NODE_ENV === 'production';
+  if (process.env.RENDER) {
+    const renderUrl = process.env.RENDER_EXTERNAL_URL || '';
+    announcedIp = renderUrl.replace(/^https?:\/\//, '').replace(/:\d+$/, '');
+    console.log(`🌐 Render mode - using hostname: ${announcedIp}`);
+  } else if (announcedIpHint) {
+    announcedIp = announcedIpHint;
+    console.log(`🌐 Using client hint: ${announcedIp}`);
+  } else if (global.ANNOUNCED_IP) {
+    announcedIp = global.ANNOUNCED_IP;
+    console.log(`🌐 Using global IP: ${announcedIp}`);
+  }
+
+  // CRITICAL: For Render, FORCE TCP-only
+  const isRender = !!process.env.RENDER;
   
   const options = {
     listenIps: [
@@ -57,23 +35,23 @@ function getWebRtcTransportOptions(announcedIpHint) {
         announcedIp: announcedIp,
       },
     ],
-    // For Render: Disable UDP, use TCP only
-    enableUdp: !isProduction,
-    enableTcp: true,
-    preferUdp: !isProduction,
-    preferTcp: isProduction,
+    // RENDER: TCP ONLY - UDP DISABLED
+    enableUdp: false,  // ALWAYS false for Render
+    enableTcp: true,   // ALWAYS true
+    preferUdp: false,  // ALWAYS false for Render
+    preferTcp: true,   // ALWAYS true for Render
     initialAvailableOutgoingBitrate: 1000000,
     minimumAvailableOutgoingBitrate: 600000,
     maxSctpMessageSize: 262144,
     maxIncomingBitrate: 1500000,
   };
 
-  console.log(`🔧 WebRTC Transport Config:`, {
-    announcedIp: options.listenIps[0].announcedIp || 'undefined (local)',
+  console.log(`🔧 WebRTC Transport Options:`, {
+    announcedIp: options.listenIps[0].announcedIp,
     enableUdp: options.enableUdp,
     enableTcp: options.enableTcp,
     preferTcp: options.preferTcp,
-    mode: isProduction ? 'PRODUCTION (TCP-only)' : 'DEVELOPMENT (UDP+TCP)'
+    mode: 'TCP-ONLY (FORCED)'
   });
 
   return options;
@@ -111,7 +89,6 @@ async function createRoom(roomId, worker) {
   ];
 
   const router = await worker.createRouter({ mediaCodecs });
-
   console.log(`✅ Router created for room ${roomId}`);
 
   const room = {
@@ -159,18 +136,24 @@ async function createRoom(roomId, worker) {
         console.log(`✅ Send transport created for ${peerId}:`, {
           id: transport.id,
           iceState: transport.iceState,
-          iceCandidates: transport.iceCandidates.length,
+          iceCandidatesCount: transport.iceCandidates.length,
+          iceCandidates: transport.iceCandidates.map(c => ({
+            protocol: c.protocol,
+            ip: c.ip,
+            port: c.port,
+            type: c.type
+          }))
         });
 
-        // Monitor transport state
+        // Monitor transport
         transport.on('icestatechange', (iceState) => {
-          console.log(`📡 Send transport ${transport.id} ICE state:`, iceState);
+          console.log(`📡 Send transport ${transport.id} ICE: ${iceState}`);
         });
 
         transport.on('dtlsstatechange', (dtlsState) => {
-          console.log(`🔒 Send transport ${transport.id} DTLS state:`, dtlsState);
+          console.log(`🔒 Send transport ${transport.id} DTLS: ${dtlsState}`);
           if (dtlsState === 'failed' || dtlsState === 'closed') {
-            console.error(`❌ Send transport ${transport.id} failed`);
+            console.error(`❌ Send transport ${transport.id} FAILED`);
           }
         });
 
@@ -181,7 +164,7 @@ async function createRoom(roomId, worker) {
           dtlsParameters: transport.dtlsParameters,
         };
       } catch (error) {
-        console.error(`❌ Failed to create send transport for ${peerId}:`, error);
+        console.error(`❌ createSendTransport error for ${peerId}:`, error);
         throw error;
       }
     },
@@ -190,13 +173,12 @@ async function createRoom(roomId, worker) {
       try {
         const peer = this.peers.get(peerId);
         if (!peer || !peer.sendTransport) {
-          throw new Error(`Send transport not found for peer ${peerId}`);
+          throw new Error(`Send transport not found for ${peerId}`);
         }
-
         await peer.sendTransport.connect({ dtlsParameters });
         console.log(`✅ Send transport connected for ${peerId}`);
       } catch (error) {
-        console.error(`❌ Failed to connect send transport for ${peerId}:`, error);
+        console.error(`❌ connectSendTransport error:`, error);
         throw error;
       }
     },
@@ -205,7 +187,7 @@ async function createRoom(roomId, worker) {
       try {
         const peer = this.peers.get(peerId);
         if (!peer || !peer.sendTransport) {
-          throw new Error(`Send transport not found for peer ${peerId}`);
+          throw new Error(`Send transport not found for ${peerId}`);
         }
 
         const producer = await peer.sendTransport.produce({
@@ -215,30 +197,22 @@ async function createRoom(roomId, worker) {
 
         peer.producers.push(producer);
 
-        console.log(`✅ Producer created for ${peerId}:`, {
-          id: producer.id,
+        console.log(`✅ Producer created:`, {
+          peerId,
+          producerId: producer.id,
           kind: producer.kind,
-          type: producer.type,
           paused: producer.paused,
         });
 
-        // Monitor producer state
         producer.on('transportclose', () => {
           console.log(`🚪 Producer ${producer.id} transport closed`);
           const index = peer.producers.indexOf(producer);
           if (index > -1) peer.producers.splice(index, 1);
         });
 
-        producer.on('score', (score) => {
-          // Log periodically for debugging
-          if (Math.random() < 0.1) { // 10% chance to reduce log spam
-            console.log(`📊 Producer ${producer.id} score:`, score);
-          }
-        });
-
         return producer.id;
       } catch (error) {
-        console.error(`❌ Failed to create producer for ${peerId}:`, error);
+        console.error(`❌ produce error:`, error);
         throw error;
       }
     },
@@ -253,18 +227,23 @@ async function createRoom(roomId, worker) {
         console.log(`✅ Recv transport created for ${peerId}:`, {
           id: transport.id,
           iceState: transport.iceState,
-          iceCandidates: transport.iceCandidates.length,
+          iceCandidatesCount: transport.iceCandidates.length,
+          iceCandidates: transport.iceCandidates.map(c => ({
+            protocol: c.protocol,
+            ip: c.ip,
+            port: c.port,
+            type: c.type
+          }))
         });
 
-        // Monitor transport state
         transport.on('icestatechange', (iceState) => {
-          console.log(`📡 Recv transport ${transport.id} ICE state:`, iceState);
+          console.log(`📡 Recv transport ${transport.id} ICE: ${iceState}`);
         });
 
         transport.on('dtlsstatechange', (dtlsState) => {
-          console.log(`🔒 Recv transport ${transport.id} DTLS state:`, dtlsState);
+          console.log(`🔒 Recv transport ${transport.id} DTLS: ${dtlsState}`);
           if (dtlsState === 'failed' || dtlsState === 'closed') {
-            console.error(`❌ Recv transport ${transport.id} failed`);
+            console.error(`❌ Recv transport ${transport.id} FAILED`);
           }
         });
 
@@ -275,7 +254,7 @@ async function createRoom(roomId, worker) {
           dtlsParameters: transport.dtlsParameters,
         };
       } catch (error) {
-        console.error(`❌ Failed to create recv transport for ${peerId}:`, error);
+        console.error(`❌ createRecvTransport error:`, error);
         throw error;
       }
     },
@@ -284,13 +263,12 @@ async function createRoom(roomId, worker) {
       try {
         const peer = this.peers.get(peerId);
         if (!peer || !peer.recvTransport) {
-          throw new Error(`Recv transport not found for peer ${peerId}`);
+          throw new Error(`Recv transport not found for ${peerId}`);
         }
-
         await peer.recvTransport.connect({ dtlsParameters });
         console.log(`✅ Recv transport connected for ${peerId}`);
       } catch (error) {
-        console.error(`❌ Failed to connect recv transport for ${peerId}:`, error);
+        console.error(`❌ connectRecvTransport error:`, error);
         throw error;
       }
     },
@@ -299,24 +277,9 @@ async function createRoom(roomId, worker) {
       try {
         const peer = this.peers.get(peerId);
         if (!peer || !peer.recvTransport) {
-          throw new Error(`Recv transport not found for peer ${peerId}`);
+          throw new Error(`Recv transport not found for ${peerId}`);
         }
 
-        // Verify producer exists
-        let producerPeer = null;
-        for (const [pid, p] of this.peers) {
-          const producer = p.producers.find(prod => prod.id === producerId);
-          if (producer) {
-            producerPeer = p;
-            break;
-          }
-        }
-
-        if (!producerPeer) {
-          throw new Error(`Producer ${producerId} not found`);
-        }
-
-        // Check if can consume
         if (!this.router.canConsume({ producerId, rtpCapabilities })) {
           throw new Error(`Cannot consume producer ${producerId}`);
         }
@@ -324,20 +287,19 @@ async function createRoom(roomId, worker) {
         const consumer = await peer.recvTransport.consume({
           producerId,
           rtpCapabilities,
-          paused: true, // Start paused, will be resumed by client
+          paused: true,
         });
 
         peer.consumers.push(consumer);
 
-        console.log(`✅ Consumer created for ${peerId}:`, {
-          id: consumer.id,
+        console.log(`✅ Consumer created:`, {
+          peerId,
+          consumerId: consumer.id,
           producerId: consumer.producerId,
           kind: consumer.kind,
-          type: consumer.type,
           paused: consumer.paused,
         });
 
-        // Monitor consumer state
         consumer.on('transportclose', () => {
           console.log(`🚪 Consumer ${consumer.id} transport closed`);
           const index = peer.consumers.indexOf(consumer);
@@ -350,24 +312,9 @@ async function createRoom(roomId, worker) {
           if (index > -1) peer.consumers.splice(index, 1);
         });
 
-        consumer.on('producerpause', () => {
-          console.log(`⏸️ Consumer ${consumer.id} producer paused`);
-        });
-
-        consumer.on('producerresume', () => {
-          console.log(`▶️ Consumer ${consumer.id} producer resumed`);
-        });
-
-        consumer.on('score', (score) => {
-          // Log periodically for debugging
-          if (Math.random() < 0.1) { // 10% chance to reduce log spam
-            console.log(`📊 Consumer ${consumer.id} score:`, score);
-          }
-        });
-
         return consumer;
       } catch (error) {
-        console.error(`❌ Failed to create consumer for ${peerId}:`, error);
+        console.error(`❌ consume error:`, error);
         throw error;
       }
     },
@@ -375,51 +322,38 @@ async function createRoom(roomId, worker) {
     async resumeConsumer(peerId, consumerId) {
       try {
         const peer = this.peers.get(peerId);
-        if (!peer) {
-          throw new Error(`Peer ${peerId} not found`);
-        }
+        if (!peer) throw new Error(`Peer ${peerId} not found`);
 
         const consumer = peer.consumers.find((c) => c.id === consumerId);
-        if (!consumer) {
-          throw new Error(`Consumer ${consumerId} not found for peer ${peerId}`);
-        }
+        if (!consumer) throw new Error(`Consumer ${consumerId} not found`);
 
         if (consumer.paused) {
           await consumer.resume();
-          console.log(`✅ Consumer resumed: ${consumerId} (${consumer.kind}) for peer ${peerId}`);
+          console.log(`✅ Consumer resumed: ${consumerId} (${consumer.kind})`);
 
-          // Request keyframe for video consumers
           if (consumer.kind === "video" && typeof consumer.requestKeyFrame === "function") {
             try {
               await consumer.requestKeyFrame();
-              console.log(`🔑 Keyframe requested for consumer ${consumerId}`);
-            } catch (error) {
-              console.warn(`⚠️ Could not request keyframe for ${consumerId}:`, error.message);
+              console.log(`🔑 Keyframe requested for ${consumerId}`);
+            } catch (e) {
+              console.warn(`⚠️ Keyframe request failed:`, e.message);
             }
           }
-        } else {
-          console.log(`ℹ️ Consumer ${consumerId} already resumed`);
         }
       } catch (error) {
-        console.error(`❌ Failed to resume consumer ${consumerId} for ${peerId}:`, error);
+        console.error(`❌ resumeConsumer error:`, error);
         throw error;
       }
     },
   };
 
   rooms.set(roomId, room);
-  console.log(`✅ Room ${roomId} created and stored`);
+  console.log(`✅ Room ${roomId} created`);
   return room;
 }
 
-// ===============================================
-// GET ROOM
-// ===============================================
 function getRoom(roomId) {
   return rooms.get(roomId);
 }
 
-// ===============================================
-// EXPORTS
-// ===============================================
 module.exports = { createRoom, getRoom };
