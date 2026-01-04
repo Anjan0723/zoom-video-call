@@ -91,7 +91,7 @@ export default function VideoTile({ peerId, name, stream }) {
         if (videoElement.readyState < 2) {
           console.log(`🎥 VideoTile ${peerId}: Waiting for loadedmetadata...`);
           await new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => reject(new Error('Metadata load timeout')), 5000);
+            const timeout = setTimeout(() => reject(new Error('Metadata load timeout')), 10000); // Increased timeout
             videoElement.addEventListener('loadedmetadata', () => {
               clearTimeout(timeout);
               resolve();
@@ -127,6 +127,18 @@ export default function VideoTile({ peerId, name, stream }) {
         };
         document.addEventListener('click', playOnInteraction, { once: true });
         document.addEventListener('touchstart', playOnInteraction, { once: true });
+        
+        // Auto-retry after a delay
+        setTimeout(() => {
+          if (videoElement.readyState >= 2) {
+            console.log(`🔄 VideoTile ${peerId}: Auto-retrying play...`);
+            videoElement.play()
+              .then(() => {
+                setVideoState(prev => ({ ...prev, isPlaying: true, error: null }));
+              })
+              .catch(console.error);
+          }
+        }, 2000);
       }
     };
 
@@ -143,6 +155,12 @@ export default function VideoTile({ peerId, name, stream }) {
       });
       track.addEventListener('unmute', () => {
         console.log(`🎥 VideoTile ${peerId}: Video track unmuted`);
+        // Try to play again when track is unmuted
+        if (videoElement.readyState >= 2) {
+          videoElement.play().then(() => {
+            setVideoState(prev => ({ ...prev, isPlaying: true, error: null }));
+          }).catch(console.error);
+        }
       });
     });
 
