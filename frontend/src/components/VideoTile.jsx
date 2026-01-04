@@ -17,20 +17,30 @@ export default function VideoTile({ peerId, name, stream }) {
 
     const attachVideo = () => {
       const videoTracks = stream.getVideoTracks ? stream.getVideoTracks() : [];
+      console.log(`🎥 VideoTile ${peerId}: Video tracks:`, videoTracks.length, 'Stream active:', stream.active);
       if (!videoTracks || videoTracks.length === 0) {
         videoElement.srcObject = null;
         return;
       }
+      console.log(`🎥 VideoTile ${peerId}: Setting srcObject to stream`);
       videoElement.srcObject = stream;
+      console.log(`🎥 VideoTile ${peerId}: Video element srcObject:`, videoElement.srcObject);
+      console.log(`🎥 VideoTile ${peerId}: Video element readyState:`, videoElement.readyState);
+      console.log(`🎥 VideoTile ${peerId}: Video element videoTracks:`, videoElement.videoTracks?.length || 0);
     };
 
     attachVideo();
 
     // Force play immediately
     const playVideo = () => {
-      videoElement.play().catch(() => {
+      console.log(`🎥 VideoTile ${peerId}: Attempting to play video. readyState:`, videoElement.readyState);
+      videoElement.play().then(() => {
+        console.log(`🎥 VideoTile ${peerId}: Video play() succeeded`);
+      }).catch(err => {
+        console.error(`🎥 VideoTile ${peerId}: Video play() failed:`, err);
         // If autoplay fails, try again on next user interaction
         const playOnClick = () => {
+          console.log(`🎥 VideoTile ${peerId}: Retrying play on click`);
           videoElement.play();
           document.removeEventListener('click', playOnClick);
         };
