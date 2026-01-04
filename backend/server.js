@@ -97,6 +97,10 @@ let worker;
   worker = await mediasoup.createWorker({
     rtcMinPort: 40000,
     rtcMaxPort: 40100,
+    rtcUdp: false,
+    rtcTcp: true,
+    rtcIPv6: false,
+    appData: { forceTCP: true }
   });
 
   console.log("✅ Mediasoup Worker started");
