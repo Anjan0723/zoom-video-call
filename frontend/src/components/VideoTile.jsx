@@ -15,63 +15,52 @@ export default function VideoTile({ peerId, name, stream }) {
       return;
     }
 
-    const attachVideo = () => {
-      const videoTracks = stream.getVideoTracks ? stream.getVideoTracks() : [];
-      console.log(`🎥 VideoTile ${peerId}: Video tracks:`, videoTracks.length, 'Stream active:', stream.active);
-      if (!videoTracks || videoTracks.length === 0) {
-        videoElement.srcObject = null;
-        return;
-      }
-      
-      // Force refresh by nulling first
-      const currentSrc = videoElement.srcObject;
+    const videoTracks = stream.getVideoTracks();
+    console.log(`🎥 VideoTile ${peerId}: Video tracks:`, videoTracks.length, 'Stream active:', stream.active);
+    
+    if (videoTracks.length === 0) {
       videoElement.srcObject = null;
-      
-      // Small delay then set new stream
-      setTimeout(() => {
-        videoElement.srcObject = stream;
-        videoElement.load(); // Force reload
-        console.log(`🎥 VideoTile ${peerId}: Set srcObject and called load()`);
-      }, 10);
-    };
-
-    attachVideo();
-
-    // Don't play immediately - wait for loadedmetadata
-    let hasPlayed = false;
-    const playVideo = () => {
-      if (hasPlayed) return;
-      hasPlayed = true;
-      console.log(`🎥 VideoTile ${peerId}: Attempting to play video. readyState:`, videoElement.readyState);
-      videoElement.play().then(() => {
-        console.log(`🎥 VideoTile ${peerId}: Video play() succeeded`);
-      }).catch(err => {
-        console.error(`🎥 VideoTile ${peerId}: Video play() failed:`, err);
-        // If autoplay fails, try again on next user interaction
-        const playOnClick = () => {
-          console.log(`🎥 VideoTile ${peerId}: Retrying play on click`);
-          videoElement.play();
-          document.removeEventListener('click', playOnClick);
-        };
-        document.addEventListener('click', playOnClick, { once: true });
-      });
-    };
-
-    const handleLoadedMetadata = () => {
-      console.log(`🎥 VideoTile ${peerId}: loadedmetadata fired, readyState:`, videoElement.readyState);
-      playVideo();
-    };
-
-    // Play immediately if already loaded
-    if (videoElement.readyState >= 2) {
-      playVideo();
-    } else {
-      videoElement.addEventListener('loadedmetadata', handleLoadedMetadata);
+      return;
     }
 
-    // Listen for new tracks
-    const handleAddTrack = () => {
-      attachVideo();
+    // Only update srcObject if it's different
+    if (videoElement.srcObject !== stream) {
+      videoElement.srcObject = stream;
+      console.log(`🎥 VideoTile ${peerId}: Set srcObject`);
+    }
+
+    // Handle playing the video
+    const playVideo = async () => {
+      try {
+        // Wait for video to be ready
+        if (videoElement.readyState < 2) {
+          await new Promise(resolve => {
+            videoElement.addEventListener('loadedmetadata', resolve, { once: true });
+          });
+        }
+        
+        console.log(`🎥 VideoTile ${peerId}: Attempting to play video. readyState:`, videoElement.readyState);
+        await videoElement.play();
+        console.log(`🎥 VideoTile ${peerId}: Video play() succeeded`);
+      } catch (err) {
+        console.error(`🎥 VideoTile ${peerId}: Video play() failed:`, err);
+        // Retry on user interaction
+        const playOnInteraction = () => {
+          console.log(`🎥 VideoTile ${peerId}: Retrying play on interaction`);
+          videoElement.play().catch(console.error);
+          document.removeEventListener('click', playOnInteraction);
+          document.removeEventListener('touchstart', playOnInteraction);
+        };
+        document.addEventListener('click', playOnInteraction, { once: true });
+        document.addEventListener('touchstart', playOnInteraction, { once: true });
+      }
+    };
+
+    playVideo();
+
+    // Listen for new tracks being added
+    const handleAddTrack = (e) => {
+      console.log(`🎥 VideoTile ${peerId}: New track added:`, e.track.kind);
       playVideo();
     };
 
@@ -79,9 +68,8 @@ export default function VideoTile({ peerId, name, stream }) {
 
     // Cleanup
     return () => {
-      videoElement.removeEventListener('loadedmetadata', handleLoadedMetadata);
       stream.removeEventListener('addtrack', handleAddTrack);
-      if (videoElement.srcObject) {
+      if (videoElement.srcObject === stream) {
         videoElement.srcObject = null;
       }
     };
@@ -92,33 +80,56 @@ export default function VideoTile({ peerId, name, stream }) {
     if (!audioElement) return;
 
     const hasValidStream = stream && stream.getTracks && stream.getTracks().length > 0;
+    
+    // Don't play local audio (causes echo)
     if (!hasValidStream || peerId === "local") {
       audioElement.srcObject = null;
       return;
     }
 
-    const attachAudio = () => {
-      const audioTracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
-      if (!audioTracks || audioTracks.length === 0) {
-        audioElement.srcObject = null;
-        return;
-      }
-      const audioOnlyStream = new MediaStream(audioTracks);
+    const audioTracks = stream.getAudioTracks();
+    
+    if (audioTracks.length === 0) {
+      audioElement.srcObject = null;
+      return;
+    }
+
+    // Create audio-only stream
+    const audioOnlyStream = new MediaStream(audioTracks);
+    
+    if (audioElement.srcObject !== audioOnlyStream) {
       audioElement.srcObject = audioOnlyStream;
+      console.log(`🔊 VideoTile ${peerId}: Set audio srcObject`);
+    }
+
+    // Play audio
+    const playAudio = async () => {
+      try {
+        await audioElement.play();
+        console.log(`🔊 VideoTile ${peerId}: Audio play() succeeded`);
+      } catch (err) {
+        console.error(`🔊 VideoTile ${peerId}: Audio play() failed:`, err);
+        // Retry on user interaction
+        const playOnInteraction = () => {
+          audioElement.play().catch(console.error);
+          document.removeEventListener('click', playOnInteraction);
+          document.removeEventListener('touchstart', playOnInteraction);
+        };
+        document.addEventListener('click', playOnInteraction, { once: true });
+        document.addEventListener('touchstart', playOnInteraction, { once: true });
+      }
     };
 
-    attachAudio();
-    audioElement.play().catch(() => {
-      const playOnClick = () => {
-        audioElement.play();
-        document.removeEventListener('click', playOnClick);
-      };
-      document.addEventListener('click', playOnClick, { once: true });
-    });
+    playAudio();
 
-    const handleAddTrack = () => {
-      attachAudio();
-      audioElement.play().catch(() => {});
+    // Listen for new audio tracks
+    const handleAddTrack = (e) => {
+      if (e.track.kind === 'audio') {
+        console.log(`🔊 VideoTile ${peerId}: New audio track added`);
+        const newAudioStream = new MediaStream([e.track]);
+        audioElement.srcObject = newAudioStream;
+        playAudio();
+      }
     };
 
     stream.addEventListener('addtrack', handleAddTrack);
@@ -139,11 +150,14 @@ export default function VideoTile({ peerId, name, stream }) {
         ref={videoRef}
         autoPlay
         playsInline
-        muted
+        muted={peerId === "local"}
         className="w-full h-full object-cover"
       />
 
-      <audio ref={audioRef} autoPlay playsInline />
+      {/* Audio Element (hidden, only for remote peers) */}
+      {peerId !== "local" && (
+        <audio ref={audioRef} autoPlay playsInline />
+      )}
 
       {/* Loading State */}
       {(!hasValidStream || !hasVideo) && (
@@ -155,14 +169,14 @@ export default function VideoTile({ peerId, name, stream }) {
               </span>
             </div>
             <div className="w-8 h-8 border-4 border-gray-600 border-t-blue-500 rounded-full animate-spin mx-auto mb-2"></div>
-            <p className="text-gray-400 text-sm">Connecting...</p>
+            <p className="text-gray-400 text-sm">Connecting video...</p>
           </div>
         </div>
       )}
 
       {/* Name Label */}
       <div className="absolute bottom-3 left-3 px-3 py-1.5 text-sm bg-black/70 text-white rounded-lg font-medium shadow-lg">
-        {name || "User"}
+        {name || "User"} {peerId === "local" && "(You)"}
       </div>
     </div>
   );
