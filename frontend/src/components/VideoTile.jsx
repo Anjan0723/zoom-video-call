@@ -131,7 +131,7 @@ export default function VideoTile({ peerId, name, stream }) {
     };
 
     // Delay play call slightly to avoid race conditions
-    const playTimeout = setTimeout(playVideo, 200);
+    const playTimeout = setTimeout(playVideo, 20);
 
     // Listen for track state changes
     videoTracks.forEach(track => {
