@@ -22,11 +22,17 @@ export default function VideoTile({ peerId, name, stream }) {
         videoElement.srcObject = null;
         return;
       }
-      console.log(`🎥 VideoTile ${peerId}: Setting srcObject to stream`);
-      videoElement.srcObject = stream;
-      console.log(`🎥 VideoTile ${peerId}: Video element srcObject:`, videoElement.srcObject);
-      console.log(`🎥 VideoTile ${peerId}: Video element readyState:`, videoElement.readyState);
-      console.log(`🎥 VideoTile ${peerId}: Video element videoTracks:`, videoElement.videoTracks?.length || 0);
+      
+      // Force refresh by nulling first
+      const currentSrc = videoElement.srcObject;
+      videoElement.srcObject = null;
+      
+      // Small delay then set new stream
+      setTimeout(() => {
+        videoElement.srcObject = stream;
+        videoElement.load(); // Force reload
+        console.log(`🎥 VideoTile ${peerId}: Set srcObject and called load()`);
+      }, 10);
     };
 
     attachVideo();
