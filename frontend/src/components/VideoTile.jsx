@@ -3,6 +3,10 @@ import React, { useEffect, useRef, useState } from "react";
 export default function VideoTile({ peerId, name, stream }) {
   const videoRef = useRef(null);
   const audioRef = useRef(null);
+  const videoEffectTokenRef = useRef(0);
+  const audioEffectTokenRef = useRef(0);
+  const videoPlayPromiseRef = useRef(null);
+  const audioPlayPromiseRef = useRef(null);
   const [videoState, setVideoState] = useState({
     hasStream: false,
     hasVideoTrack: false,
@@ -14,6 +18,9 @@ export default function VideoTile({ peerId, name, stream }) {
   useEffect(() => {
     const videoElement = videoRef.current;
     if (!videoElement) return;
+
+    videoEffectTokenRef.current += 1;
+    const token = videoEffectTokenRef.current;
 
     const hasValidStream = stream && stream.getTracks && stream.getTracks().length > 0;
 
@@ -40,17 +47,16 @@ export default function VideoTile({ peerId, name, stream }) {
       label: t.label
     })));
     
-    if (videoTracks.length === 0) {
-      videoElement.srcObject = null;
-      setVideoState({
-        hasStream: true,
-        hasVideoTrack: false,
-        isPlaying: false,
-        readyState: 0,
-        error: 'No video tracks'
-      });
-      return;
-    }
+    // Always attach the stream even if video track is not present yet.
+    // mediasoup often delivers audio first, then video arrives later via addtrack.
+    setVideoState(prev => ({
+      ...prev,
+      hasStream: true,
+      hasVideoTrack: videoTracks.length > 0,
+      isPlaying: false,
+      readyState: 0,
+      error: videoTracks.length === 0 ? 'No video tracks' : null
+    }));
 
     // Check if video track is actually active
     const activeVideoTrack = videoTracks.find(t => t.readyState === 'live' && t.enabled);
@@ -69,69 +75,54 @@ export default function VideoTile({ peerId, name, stream }) {
     if (videoElement.srcObject !== stream) {
       console.log(`🎥 VideoTile ${peerId}: Setting srcObject to stream`, stream.id);
       videoElement.srcObject = stream;
-      
-      // Force a reload of the video element
-      videoElement.load();
     }
 
-    // Monitor ready state changes
-    const updateReadyState = () => {
-      setVideoState(prev => ({
-        ...prev,
-        readyState: videoElement.readyState
-      }));
-      console.log(`🎥 VideoTile ${peerId}: ReadyState changed to:`, videoElement.readyState);
-    };
-
-    videoElement.addEventListener('loadedmetadata', updateReadyState);
-    videoElement.addEventListener('loadeddata', updateReadyState);
-    videoElement.addEventListener('canplay', updateReadyState);
-    videoElement.addEventListener('canplaythrough', updateReadyState);
-
     // Handle playing the video
-    let isPlaying = false;
+    let cancelled = false;
     const playVideo = async () => {
-      if (isPlaying) return; // Prevent multiple play calls
-      isPlaying = true;
-      
       try {
-        console.log(`🎥 VideoTile ${peerId}: Attempting to play video. readyState:`, videoElement.readyState);
-        
-        // Wait a bit for the video to be ready
-        if (videoElement.readyState < 2) {
-          console.log(`🎥 VideoTile ${peerId}: Waiting for video to be ready...`);
-          await new Promise(resolve => {
-            const checkReady = () => {
-              if (videoElement.readyState >= 2) {
-                resolve();
-              } else {
-                setTimeout(checkReady, 100);
-              }
-            };
-            checkReady();
-          });
+        if (cancelled) return;
+        console.log(`🎥 VideoTile ${peerId}: Attempting to play video.`);
+        if (videoPlayPromiseRef.current) {
+          await videoPlayPromiseRef.current;
+          return;
         }
-        
-        await videoElement.play();
+        videoPlayPromiseRef.current = videoElement.play();
+        await videoPlayPromiseRef.current;
+        if (cancelled) return;
         console.log(`✅ VideoTile ${peerId}: Video play() succeeded`);
         setVideoState(prev => ({
           ...prev,
           hasStream: true,
           hasVideoTrack: true,
           isPlaying: true,
+          readyState: videoElement.readyState,
           error: null
         }));
       } catch (err) {
+        if (cancelled) return;
+        if (err?.name === 'AbortError') {
+          // Usually caused by React StrictMode effect remount or rapid srcObject updates.
+          // Safe to ignore; a subsequent play() will succeed.
+          return;
+        }
         console.error(`❌ VideoTile ${peerId}: Video play() failed:`, err);
         setVideoState(prev => ({
           ...prev,
-          error: err.message
+          hasStream: true,
+          hasVideoTrack: true,
+          isPlaying: false,
+          readyState: videoElement.readyState,
+          error: err?.message || 'Video play failed'
         }));
+      } finally {
+        videoPlayPromiseRef.current = null;
       }
     };
 
-    // Delay play call slightly to avoid race conditions
-    const playTimeout = setTimeout(playVideo, 20);
+    if (videoTracks.length > 0) {
+      playVideo();
+    }
 
     // Listen for track state changes
     videoTracks.forEach(track => {
@@ -145,11 +136,9 @@ export default function VideoTile({ peerId, name, stream }) {
       track.addEventListener('unmute', () => {
         console.log(`🎥 VideoTile ${peerId}: Video track unmuted`);
         // Try to play again when track is unmuted
-        if (videoElement.readyState >= 2) {
-          videoElement.play().then(() => {
-            setVideoState(prev => ({ ...prev, isPlaying: true, error: null }));
-          }).catch(console.error);
-        }
+        videoElement.play().then(() => {
+          setVideoState(prev => ({ ...prev, isPlaying: true, readyState: videoElement.readyState, error: null }));
+        }).catch(console.error);
       });
     });
 
@@ -157,6 +146,12 @@ export default function VideoTile({ peerId, name, stream }) {
     const handleAddTrack = (e) => {
       console.log(`🎥 VideoTile ${peerId}: New track added:`, e.track.kind, e.track.id);
       if (e.track.kind === 'video') {
+        setVideoState(prev => ({
+          ...prev,
+          hasStream: true,
+          hasVideoTrack: true,
+          error: null
+        }));
         playVideo();
       }
     };
@@ -165,24 +160,23 @@ export default function VideoTile({ peerId, name, stream }) {
 
     // Cleanup
     return () => {
-      clearTimeout(playTimeout);
-      videoElement.removeEventListener('loadedmetadata', updateReadyState);
-      videoElement.removeEventListener('loadeddata', updateReadyState);
-      videoElement.removeEventListener('canplay', updateReadyState);
-      videoElement.removeEventListener('canplaythrough', updateReadyState);
+      cancelled = true;
+      videoPlayPromiseRef.current = null;
       stream.removeEventListener('addtrack', handleAddTrack);
-      // Don't clear srcObject immediately to avoid interrupting play
-      setTimeout(() => {
-        if (videoElement.srcObject === stream) {
-          videoElement.srcObject = null;
-        }
-      }, 100);
+      // React StrictMode mounts/unmounts effects twice in dev.
+      // Only clear if this cleanup belongs to the latest effect.
+      if (videoEffectTokenRef.current === token && videoElement.srcObject === stream) {
+        videoElement.srcObject = null;
+      }
     };
   }, [stream, peerId]);
 
   useEffect(() => {
     const audioElement = audioRef.current;
     if (!audioElement) return;
+
+    audioEffectTokenRef.current += 1;
+    const token = audioEffectTokenRef.current;
 
     const hasValidStream = stream && stream.getTracks && stream.getTracks().length > 0;
     
@@ -193,52 +187,50 @@ export default function VideoTile({ peerId, name, stream }) {
     }
 
     const audioTracks = stream.getAudioTracks();
-    
     if (audioTracks.length === 0) {
       audioElement.srcObject = null;
       return;
     }
 
-    // Create audio-only stream
-    const audioOnlyStream = new MediaStream(audioTracks);
-    
-    if (audioElement.srcObject !== audioOnlyStream) {
-      audioElement.srcObject = audioOnlyStream;
+    // Attach the full stream to audio element to avoid creating a new MediaStream
+    // on each render (which interrupts playback).
+    if (audioElement.srcObject !== stream) {
+      audioElement.srcObject = stream;
       console.log(`🔊 VideoTile ${peerId}: Set audio srcObject`);
     }
 
     // Play audio
     const playAudio = async () => {
       try {
-        await audioElement.play();
+        if (audioPlayPromiseRef.current) {
+          await audioPlayPromiseRef.current;
+          return;
+        }
+        audioPlayPromiseRef.current = audioElement.play();
+        await audioPlayPromiseRef.current;
         console.log(`🔊 VideoTile ${peerId}: Audio play() succeeded`);
       } catch (err) {
+        if (err?.name === 'AbortError') {
+          return;
+        }
         console.error(`🔊 VideoTile ${peerId}: Audio play() failed:`, err);
         const playOnInteraction = () => {
           audioElement.play().catch(console.error);
         };
         document.addEventListener('click', playOnInteraction, { once: true });
         document.addEventListener('touchstart', playOnInteraction, { once: true });
+      } finally {
+        audioPlayPromiseRef.current = null;
       }
     };
 
     playAudio();
 
-    // Listen for new audio tracks
-    const handleAddTrack = (e) => {
-      if (e.track.kind === 'audio') {
-        console.log(`🔊 VideoTile ${peerId}: New audio track added`);
-        const newAudioStream = new MediaStream([e.track]);
-        audioElement.srcObject = newAudioStream;
-        playAudio();
-      }
-    };
-
-    stream.addEventListener('addtrack', handleAddTrack);
-
     return () => {
-      stream.removeEventListener('addtrack', handleAddTrack);
-      audioElement.srcObject = null;
+      audioPlayPromiseRef.current = null;
+      if (audioEffectTokenRef.current === token && audioElement.srcObject === stream) {
+        audioElement.srcObject = null;
+      }
     };
   }, [stream, peerId]);
 
@@ -252,7 +244,7 @@ export default function VideoTile({ peerId, name, stream }) {
         ref={videoRef}
         autoPlay
         playsInline
-        muted={peerId === "local"}
+        muted
         className="w-full h-full object-cover"
         style={{ backgroundColor: '#1f2937' }}
       />
@@ -263,7 +255,7 @@ export default function VideoTile({ peerId, name, stream }) {
       )}
 
       {/* Loading/Error State */}
-      {(!hasValidStream || !hasVideo || !videoState.isPlaying) && (
+      {(!hasValidStream || !hasVideo) && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
           <div className="text-center max-w-xs px-4">
             <div className="w-16 h-16 bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-3">
@@ -271,21 +263,9 @@ export default function VideoTile({ peerId, name, stream }) {
                 {name?.[0]?.toUpperCase() || "?"}
               </span>
             </div>
-            {videoState.error ? (
-              <>
-                <p className="text-red-400 text-sm mb-2">⚠️ {videoState.error}</p>
-                <p className="text-gray-500 text-xs">Click anywhere to retry</p>
-              </>
-            ) : (
-              <>
-                <div className="w-8 h-8 border-4 border-gray-600 border-t-blue-500 rounded-full animate-spin mx-auto mb-2"></div>
-                <p className="text-gray-400 text-sm">
-                  {!hasValidStream ? 'Waiting for stream...' : 
-                   !hasVideo ? 'Waiting for video track...' : 
-                   `Loading video... (${videoState.readyState}/4)`}
-                </p>
-              </>
-            )}
+            <p className="text-gray-400 text-sm">
+              {!hasValidStream ? 'Waiting for stream...' : 'Camera is off'}
+            </p>
           </div>
         </div>
       )}
